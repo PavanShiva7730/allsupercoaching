@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Online Classes Widget (Apps Script + Category Filter)</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #ffffff;
+  color: #111827;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.classes-heading {
+  font-size: 20px;
+  font-weight: 600;
+  border-left: 3px solid #2d6bfa;
+  padding-left: 8px;
+  margin: 0;
+}
+
+/* Dropdown */
+.category-select {
+  min-width: 220px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  font-size: 14px;
+}
+
+.carousel-header {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.carousel-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  cursor: pointer;
+}
+.carousel-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.carousel-viewport {
+  overflow: hidden;
+}
+
+.carousel-track {
+  display: flex;
+  gap: 16px;
+  transition: transform 0.3s ease;
+}
+
+.course-card {
+  flex: 0 0 100%;
+  max-width: 260px;
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 2px 8px rgba(15,23,42,0.06);
+}
+
+.course-image-wrapper {
+  padding-top: 60%;
+  position: relative;
+}
+
+.course-image-wrapper img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.course-content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.course-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.enroll-btn {
+  margin-top: auto;
+  width: 100%;
+  padding: 8px 0;
+  border-radius: 8px;
+  border: none;
+  background: #00b3d6;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.enroll-btn:hover { background: #009bb8; }
+
+.course-provider {
+  font-size: 12px;
+  color: #868b96;
+  margin-top: 6px;
+}
+
+.course-meta {
+  font-size: 12px;
+  color: #5b5f69;
+  margin-top: 6px;
+}
+
+/* Empty state */
+.empty-state {
+  padding: 16px;
+  border: 1px dashed #e5e7eb;
+  border-radius: 12px;
+  color: #6b7280;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <!-- Heading + Category Dropdown -->
+  <div class="top-row">
+    <h3 class="classes-heading">Online classes of 375+ Exams</h3>
+
+    <select class="category-select" id="categorySelect">
+      <option value="__ALL__">All Categories</option>
+    </select>
+  </div>
+
+  <!-- Carousel buttons -->
+  <div class="carousel-header">
+    <button class="carousel-btn" data-prev>‹</button>
+    <button class="carousel-btn" data-next>›</button>
+  </div>
+
+  <!-- Carousel -->
+  <div class="carousel-viewport" data-viewport>
+    <div class="carousel-track" data-track></div>
+  </div>
+
+  <div id="emptyState" class="empty-state" style="display:none; margin-top:12px;">
+    No courses found in this category.
+  </div>
+
+</div>
+
+<script>
+(function () {
+  // ✅ Your Apps Script Web App URL
+  const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzQ1HTLY07VPYSzpGKnpeYFl0QaVYiLzzceuNHkTIwfZXpm5qbC1zrsHOAPzLrM3SQx/exec";
+
+  // ✅ Put your EXACT sheet tab name here (check bottom tab in Google Sheet)
+  const SHEET_TAB = "Sheet1";
+
+  // Data source URL
+  const DATA_URL = `${WEB_APP_URL}?sheet=${encodeURIComponent(SHEET_TAB)}`;
+
+  const viewport = document.querySelector("[data-viewport]");
+  const track = document.querySelector("[data-track]");
+  const prevBtn = document.querySelector("[data-prev]");
+  const nextBtn = document.querySelector("[data-next]");
+  const categorySelect = document.getElementById("categorySelect");
+  const emptyState = document.getElementById("emptyState");
+
+  let index = 0;
+  let allCourses = [];
+  let filteredCourses = [];
+
+  function cardsPerView() {
+    const w = viewport.clientWidth;
+    if (w >= 1024) return 4;
+    if (w >= 768) return 3;
+    if (w >= 480) return 2;
+    return 1;
+  }
+
+  function update() {
+    if (!track.children.length) {
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+      return;
+    }
+
+    const gap = 16;
+    const cardWidth = track.children[0].offsetWidth + gap;
+    const maxIndex = Math.max(0, track.children.length - cardsPerView());
+
+    index = Math.max(0, Math.min(index, maxIndex));
+    track.style.transform = `translateX(-${index * cardWidth}px)`;
+
+    prevBtn.disabled = index === 0;
+    nextBtn.disabled = index === maxIndex;
+  }
+
+  function normalizeImageUrl(url) {
+    if (!url) return "";
+    const u = String(url).trim();
+    if (u.startsWith("//")) return "https:" + u;
+    return u;
+  }
+
+  function escapeHtml(str) {
+    return String(str || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function buildCard(course) {
+    const img = normalizeImageUrl(course["Image Link"]);
+    const title = course["Course Name"] || "";
+    const link = course["Link"] || "#";
+    const team = course["Team"] || "";
+    const lang = course["Language"] || "";
+
+    const card = document.createElement("article");
+    card.className = "course-card";
+
+    card.innerHTML = `
+      <div class="course-image-wrapper">
+        <img src="${escapeHtml(img)}" loading="lazy" alt="${escapeHtml(title)}">
+      </div>
+      <div class="course-content">
+        <h4 class="course-title">${escapeHtml(title)}</h4>
+
+        <button class="enroll-btn" type="button"
+          onclick="window.open('${escapeHtml(link)}','_blank')">
+          Enroll Now
+        </button>
+
+        <div class="course-provider">${escapeHtml(team)}</div>
+        <div class="course-meta">${escapeHtml(lang)}</div>
+      </div>
+    `;
+    return card;
+  }
+
+  function renderCourses(list) {
+    track.innerHTML = "";
+    emptyState.style.display = list.length ? "none" : "block";
+
+    list.forEach(row => track.appendChild(buildCard(row)));
+
+    index = 0;
+    update();
+  }
+
+  function fillCategoryDropdown(courses) {
+    const cats = new Set();
+    courses.forEach(c => {
+      const cat = (c["Category"] || "").trim();
+      if (cat) cats.add(cat);
+    });
+
+    const sorted = Array.from(cats).sort((a,b) => a.localeCompare(b));
+
+    categorySelect.innerHTML = `<option value="__ALL__">All Categories</option>`;
+    sorted.forEach(cat => {
+      const opt = document.createElement("option");
+      opt.value = cat;
+      opt.textContent = cat;
+      categorySelect.appendChild(opt);
+    });
+  }
+
+  function applyFilter() {
+    const selected = categorySelect.value;
+
+    if (selected === "__ALL__") {
+      filteredCourses = [...allCourses];
+    } else {
+      filteredCourses = allCourses.filter(c => (c["Category"] || "").trim() === selected);
+    }
+
+    renderCourses(filteredCourses);
+  }
+
+  async function loadCourses() {
+    try {
+      const res = await fetch(DATA_URL, { cache: "no-store" });
+      const data = await res.json();
+
+      // Keep only non-empty rows
+      allCourses = (data || []).filter(r => {
+        const img = (r["Image Link"] || "").trim();
+        const title = (r["Course Name"] || "").trim();
+        const link = (r["Link"] || "").trim();
+        const cat = (r["Category"] || "").trim();
+        return img || title || link || cat;
+      });
+
+      fillCategoryDropdown(allCourses);
+      applyFilter(); // default ALL
+    } catch (e) {
+      console.error("Failed to load courses:", e);
+      track.innerHTML = `<div class="empty-state">Unable to load courses right now.</div>`;
+      emptyState.style.display = "none";
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+    }
+  }
+
+  // Controls
+  prevBtn.onclick = () => { index--; update(); };
+  nextBtn.onclick = () => { index++; update(); };
+  window.addEventListener("resize", update);
+
+  // Dropdown filter
+  categorySelect.addEventListener("change", applyFilter);
+
+  // Load from sheet
+  loadCourses();
+})();
+</script>
+
+</body>
+</html>
