@@ -185,13 +185,8 @@ body {
 
 <script>
 (function () {
-  // ✅ Your Apps Script Web App URL
   const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzQ1HTLY07VPYSzpGKnpeYFl0QaVYiLzzceuNHkTIwfZXpm5qbC1zrsHOAPzLrM3SQx/exec";
-
-  // ✅ Put your EXACT sheet tab name here (check bottom tab in Google Sheet)
   const SHEET_TAB = "Sheet1";
-
-  // Data source URL
   const DATA_URL = `${WEB_APP_URL}?sheet=${encodeURIComponent(SHEET_TAB)}`;
 
   const viewport = document.querySelector("[data-viewport]");
@@ -204,6 +199,11 @@ body {
   let index = 0;
   let allCourses = [];
   let filteredCourses = [];
+
+  // ✅ Cache keys
+  const CACHE_KEY = "tb_superpass_courses_cache_v1";
+  const CACHE_TIME_KEY = "tb_superpass_courses_cache_time_v1";
+  const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
   function cardsPerView() {
     const w = viewport.clientWidth;
@@ -247,6 +247,29 @@ body {
       .replaceAll("'", "&#039;");
   }
 
+  // ✅ Skeleton cards while loading (fast perception)
+  function renderSkeleton(count = 4) {
+    track.innerHTML = "";
+    emptyState.style.display = "none";
+
+    for (let i = 0; i < count; i++) {
+      const sk = document.createElement("article");
+      sk.className = "course-card";
+      sk.innerHTML = `
+        <div class="course-image-wrapper" style="background:#f3f4f6;"></div>
+        <div class="course-content">
+          <div style="height:14px;background:#f3f4f6;border-radius:6px;width:90%;"></div>
+          <div style="height:40px;margin-top:12px;background:#f3f4f6;border-radius:8px;"></div>
+          <div style="height:12px;margin-top:10px;background:#f3f4f6;border-radius:6px;width:60%;"></div>
+          <div style="height:12px;margin-top:8px;background:#f3f4f6;border-radius:6px;width:40%;"></div>
+        </div>
+      `;
+      track.appendChild(sk);
+    }
+    index = 0;
+    update();
+  }
+
   function buildCard(course) {
     const img = normalizeImageUrl(course["Image Link"]);
     const title = course["Course Name"] || "";
@@ -279,9 +302,7 @@ body {
   function renderCourses(list) {
     track.innerHTML = "";
     emptyState.style.display = list.length ? "none" : "block";
-
     list.forEach(row => track.appendChild(buildCard(row)));
-
     index = 0;
     update();
   }
@@ -294,6 +315,7 @@ body {
     });
 
     const sorted = Array.from(cats).sort((a,b) => a.localeCompare(b));
+    const current = categorySelect.value;
 
     categorySelect.innerHTML = `<option value="__ALL__">All Categories</option>`;
     sorted.forEach(cat => {
@@ -302,40 +324,82 @@ body {
       opt.textContent = cat;
       categorySelect.appendChild(opt);
     });
+
+    // Keep selection if possible
+    if ([...categorySelect.options].some(o => o.value === current)) {
+      categorySelect.value = current;
+    }
   }
 
   function applyFilter() {
     const selected = categorySelect.value;
-
-    if (selected === "__ALL__") {
-      filteredCourses = [...allCourses];
-    } else {
-      filteredCourses = allCourses.filter(c => (c["Category"] || "").trim() === selected);
-    }
+    filteredCourses = (selected === "__ALL__")
+      ? [...allCourses]
+      : allCourses.filter(c => (c["Category"] || "").trim() === selected);
 
     renderCourses(filteredCourses);
   }
 
-  async function loadCourses() {
+  function cleanRows(data) {
+    return (data || []).filter(r => {
+      const img = (r["Image Link"] || "").trim();
+      const title = (r["Course Name"] || "").trim();
+      const link = (r["Link"] || "").trim();
+      const cat = (r["Category"] || "").trim();
+      return img || title || link || cat;
+    });
+  }
+
+  // ✅ Use cached data instantly if available
+  function tryRenderFromCache() {
     try {
-      const res = await fetch(DATA_URL, { cache: "no-store" });
+      const cached = localStorage.getItem(CACHE_KEY);
+      const cachedTime = Number(localStorage.getItem(CACHE_TIME_KEY) || 0);
+      if (!cached) return false;
+
+      const age = Date.now() - cachedTime;
+      if (age > CACHE_TTL_MS) return false;
+
+      const parsed = JSON.parse(cached);
+      allCourses = cleanRows(parsed);
+      fillCategoryDropdown(allCourses);
+      applyFilter();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // ✅ Fetch fresh in background (fast + always updated)
+  async function fetchFreshAndUpdate() {
+    try {
+      // NOTE: do NOT use no-store; allow browser caching
+      const res = await fetch(DATA_URL, { cache: "force-cache" });
       const data = await res.json();
 
-      // Keep only non-empty rows
-      allCourses = (data || []).filter(r => {
-        const img = (r["Image Link"] || "").trim();
-        const title = (r["Course Name"] || "").trim();
-        const link = (r["Link"] || "").trim();
-        const cat = (r["Category"] || "").trim();
-        return img || title || link || cat;
-      });
+      const cleaned = cleanRows(data);
 
-      fillCategoryDropdown(allCourses);
-      applyFilter(); // default ALL
+      // Only update UI if data changed (avoid flicker)
+      const old = localStorage.getItem(CACHE_KEY);
+      const newStr = JSON.stringify(cleaned);
+      if (old !== newStr) {
+        allCourses = cleaned;
+        fillCategoryDropdown(allCourses);
+        applyFilter();
+
+        localStorage.setItem(CACHE_KEY, newStr);
+        localStorage.setItem(CACHE_TIME_KEY, String(Date.now()));
+      } else {
+        // refresh cache time
+        localStorage.setItem(CACHE_TIME_KEY, String(Date.now()));
+      }
     } catch (e) {
-      console.error("Failed to load courses:", e);
-      track.innerHTML = `<div class="empty-state">Unable to load courses right now.</div>`;
-      emptyState.style.display = "none";
+      console.error("Fresh fetch failed:", e);
+      // If nothing rendered yet, show error
+      if (!track.children.length) {
+        track.innerHTML = `<div class="empty-state">Unable to load courses right now.</div>`;
+        emptyState.style.display = "none";
+      }
       prevBtn.disabled = true;
       nextBtn.disabled = true;
     }
@@ -345,12 +409,12 @@ body {
   prevBtn.onclick = () => { index--; update(); };
   nextBtn.onclick = () => { index++; update(); };
   window.addEventListener("resize", update);
-
-  // Dropdown filter
   categorySelect.addEventListener("change", applyFilter);
 
-  // Load from sheet
-  loadCourses();
+  // ✅ Start
+  renderSkeleton(4);                 // show immediately
+  const cachedShown = tryRenderFromCache(); // show cached instantly if exists
+  fetchFreshAndUpdate();             // always refresh in background
 })();
 </script>
 
